@@ -1,0 +1,12 @@
+{
+  "M_solar": 1000000000.0,
+  "a_over_Rs": 100.0,
+  "e": 0.60,
+  "orbits": 5,
+  "save_every": 10,
+  "dt_scale_peri": 0.0025,
+  "steps_per_orbit": 20000,
+  "output_csv": "orbits.csv",
+  "start_at": "pericenter",
+  "model": "1PN"
+}

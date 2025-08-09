@@ -5,6 +5,9 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <filesystem>
+#include <sstream>
+#include <regex>
 
 // Simple 2D vector utilities
 struct Vec2 {
@@ -68,20 +71,19 @@ inline Vec2 accel_1pn(const Vec2& r, const Vec2& v, double mu) {
 }
 
 // Osculating orbital elements from instantaneous state (planar)
-// Uses classical two-body relations with the supplied mu
 struct Elements {
     double a;      // semi-major axis
     double e;      // eccentricity
-    double omega;  // argument of periapsis (rad), angle of eccentricity vector
+    double omega;  // argument of periapsis (rad)
     double f;      // true anomaly (rad)
-    double h;      // specific angular momentum (scalar |r x v|)
+    double h;      // specific angular momentum
     double E;      // specific energy
 };
 
 inline Elements elements_from_state(const Vec2& r, const Vec2& v, double mu) {
     const double rnorm = norm(r);
     const double v2    = norm2(v);
-    const double hz    = cross_z(r, v); // out-of-plane scalar
+    const double hz    = cross_z(r, v);
     const double hmag  = std::abs(hz);
 
     // Specific energy
@@ -94,7 +96,6 @@ inline Elements elements_from_state(const Vec2& r, const Vec2& v, double mu) {
     }
 
     // Eccentricity vector in 2D using (v x h)/mu - r_hat
-    // In 2D, (v x h) = (v_y*h, -v_x*h, 0)
     const double inv_mu = 1.0 / mu;
     const double inv_r  = 1.0 / rnorm;
     Vec2 evec{
@@ -107,7 +108,6 @@ inline Elements elements_from_state(const Vec2& r, const Vec2& v, double mu) {
     const double omega = std::atan2(evec.y, evec.x);
 
     // True anomaly f from evec and r
-    // cos f = (evec · r) / (e r), sin f = cross(evec, r)_z / (e r)
     double f = std::numeric_limits<double>::quiet_NaN();
     if (e > 1e-12) {
         const double er   = dot(evec, r);
@@ -122,7 +122,6 @@ inline Elements elements_from_state(const Vec2& r, const Vec2& v, double mu) {
 // RK4 integrator step for a system with acceleration a(r, v)
 template <typename AccelFunc>
 inline void rk4_step(State& s, double dt, AccelFunc&& accel, double mu) {
-    // k's for r and v
     Vec2 k1_r = s.v;
     Vec2 k1_v = accel(s.r, s.v, mu);
 
@@ -139,66 +138,194 @@ inline void rk4_step(State& s, double dt, AccelFunc&& accel, double mu) {
     s.v += (k1_v + k2_v * 2.0 + k3_v * 2.0 + k4_v) * (dt / 6.0);
 }
 
+// ------------ Very small JSON reader (keyed extraction) ------------
+struct Config {
+    double M_solar = 1.0e9;
+    double a_over_Rs = 100.0;
+    double e = 0.60;
+    int orbits = 5;
+    int save_every = 10;
+    double dt_scale_peri = 0.0025;
+    int steps_per_orbit = 20000;
+    std::string output_csv = "orbits.csv";
+    std::string start_at = "pericenter"; // or "apocenter"
+    std::string model = "1PN"; // "1PN" or "Newtonian"
+    bool use_explicit_state = false;
+    Vec2 r0{};
+    Vec2 v0{};
+};
+
+inline bool extract_number(const std::string& s, const std::string& key, double& out) {
+    std::regex re("\"" + key + R"(\"\s*:\s*([-+0-9.eE]+))");
+    std::smatch m;
+    if (std::regex_search(s, m, re)) {
+        out = std::stod(m[1]);
+        return true;
+    }
+    return false;
+}
+inline bool extract_integer(const std::string& s, const std::string& key, int& out) {
+    std::regex re("\"" + key + R"(\"\s*:\s*([-+]?[0-9]+))");
+    std::smatch m;
+    if (std::regex_search(s, m, re)) {
+        out = std::stoi(m[1]);
+        return true;
+    }
+    return false;
+}
+inline bool extract_string(const std::string& s, const std::string& key, std::string& out) {
+    std::regex re("\"" + key + R"(\"\s*:\s*\"([^\"]*)\")");
+    std::smatch m;
+    if (std::regex_search(s, m, re)) {
+        out = m[1];
+        return true;
+    }
+    return false;
+}
+inline bool extract_vec2(const std::string& s, const std::string& key, Vec2& out) {
+    std::regex re("\"" + key + R"(\"\s*:\s*\[\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*\])");
+    std::smatch m;
+    if (std::regex_search(s, m, re)) {
+        out.x = std::stod(m[1]);
+        out.y = std::stod(m[2]);
+        return true;
+    }
+    return false;
+}
+
+inline Config load_config(const std::string& path) {
+    Config cfg;
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) {
+        std::cout << "Config file not found (" << path << "). Using defaults.\n";
+        return cfg;
+    }
+    std::ostringstream oss;
+    oss << ifs.rdbuf();
+    const std::string text = oss.str();
+
+    extract_number(text, "M_solar", cfg.M_solar);
+    extract_number(text, "a_over_Rs", cfg.a_over_Rs);
+    extract_number(text, "e", cfg.e);
+    extract_integer(text, "orbits", cfg.orbits);
+    extract_integer(text, "save_every", cfg.save_every);
+    extract_number(text, "dt_scale_peri", cfg.dt_scale_peri);
+    extract_integer(text, "steps_per_orbit", cfg.steps_per_orbit);
+    extract_string(text, "output_csv", cfg.output_csv);
+    extract_string(text, "start_at", cfg.start_at);
+    extract_string(text, "model", cfg.model);
+
+    Vec2 r0{}, v0{};
+    const bool got_r0 = extract_vec2(text, "r0", r0);
+    const bool got_v0 = extract_vec2(text, "v0", v0);
+    if (got_r0 && got_v0) {
+        cfg.use_explicit_state = true;
+        cfg.r0 = r0;
+        cfg.v0 = v0;
+    }
+    return cfg;
+}
+// -------------------------------------------------------------------
+
 int main() {
-    // Central mass: 1e9 solar masses
-    const double M = 1.0e9 * M_sun;
+    std::cout << "Working directory: " << std::filesystem::current_path() << "\n";
+
+    // Load configuration
+    const std::string cfgPath = "config.json";
+    Config cfg = load_config(cfgPath);
+
+    // Central mass and mu
+    const double M = cfg.M_solar * M_sun;
     const double mu = G * M;
 
-    // Choose orbital elements: a = 100 Rs, e = 0.6
+    // Schwarzschild radius
     const double Rs = 2.0 * mu / (c * c);
-    const double a = 100.0 * Rs;       // semi-major axis (m)
-    const double e = 0.60;             // eccentricity
 
-    // Derived Newtonian quantities
-    const double rp = a * (1.0 - e);   // pericenter distance
-    const double ra = a * (1.0 + e);   // apocenter distance
-    const double T = 2.0 * M_PI * std::sqrt(a * a * a / mu); // period
+    // Initial state
+    double a = cfg.a_over_Rs * Rs;
+    double e = cfg.e;
 
-    // Initial conditions at pericenter: r = (rp, 0), v = (0, v_peri) (pure tangential)
-    // v_peri = sqrt(mu * (1 + e) / (a * (1 - e)))
+    State sN{}, sGR{};
+    if (cfg.use_explicit_state) {
+        sN = State{cfg.r0, cfg.v0};
+        sGR = sN;
+        // If explicit state provided, infer a/e for logging
+        Elements el0 = elements_from_state(sN.r, sN.v, mu);
+        a = el0.a;
+        e = el0.e;
+    } else {
+        // Choose pericenter or apocenter start
+        if (cfg.start_at == "apocenter") {
+            const double ra = a * (1.0 + e);
+            const double v_apo = std::sqrt(mu * (1.0 - e) / (a * (1.0 + e)));
+            sN = State{Vec2{ra, 0.0}, Vec2{0.0, -v_apo}}; // rotate/sign as desired
+        } else { // pericenter
+            const double rp = a * (1.0 - e);
+            const double v_peri = std::sqrt(mu * (1.0 + e) / (a * (1.0 - e)));
+            sN = State{Vec2{rp, 0.0}, Vec2{0.0, v_peri}};
+        }
+        sGR = sN;
+    }
+
+    // Useful scalars
+    const double rp = a * (1.0 - e);
+    const double ra = a * (1.0 + e);
+    const double T = 2.0 * M_PI * std::sqrt(a * a * a / mu);
     const double v_peri = std::sqrt(mu * (1.0 + e) / (a * (1.0 - e)));
 
-    State sN{Vec2{rp, 0.0}, Vec2{0.0, v_peri}};  // Newtonian
-    State sGR = sN;                               // 1PN starts from same initial state
-
-    // Time stepping: choose dt small enough to resolve pericenter passage.
-    const double dt1 = 0.0025 * rp / v_peri;            // fine near pericenter
-    const double dt2 = T / 20000.0;                      // adequate sampling per orbit
+    // Time step selection
+    const double dt1 = cfg.dt_scale_peri * rp / v_peri;
+    const double dt2 = T / static_cast<double>(cfg.steps_per_orbit);
     const double dt = std::min(dt1, dt2);
 
-    // Simulate multiple orbits
-    const int orbits = 5;
+    // Sim horizon
+    const int orbits = cfg.orbits;
     const double t_end = orbits * T;
 
-    // Output CSV (now includes orbital elements)
-    std::ofstream ofs("orbits.csv");
+    // Output CSV (with orbital elements)
+    std::ofstream ofs(cfg.output_csv);
+    if (!ofs.is_open()) {
+        std::cerr << "ERROR: Failed to open " << cfg.output_csv << " for writing.\n";
+        return 1;
+    }
     ofs << std::setprecision(16);
-    ofs << "t,"
-           "xN,yN,xGR,yGR,"
-           "rN,rGR,"
-           "aN,eN,omegaN,fN,hN,EN,"
-           "aGR,eGR,omegaGR,fGR,hGR,EGR\n";
+    const char* header =
+        "t,"
+        "xN,yN,xGR,yGR,"
+        "rN,rGR,"
+        "aN,eN,omegaN,fN,hN,EN,"
+        "aGR,eGR,omegaGR,fGR,hGR,EGR\n";
+    std::cout << "CSV header: " << header;
+    ofs << header;
 
-    // Print some summary to console
-    const double delta_omega = 6.0 * M_PI * mu / (a * (1.0 - e * e) * c * c); // radians per orbit (1PN prediction)
-    std::cout << "Central mass M = " << M << " kg (1e9 solar masses)\n";
+    // Console summary
+    const double delta_omega = 6.0 * M_PI * mu / (a * (1.0 - e * e) * c * c); // rad/orbit
+    std::cout << "Config file: " << cfgPath << "\n";
+    std::cout << "Central mass M = " << M << " kg (" << cfg.M_solar << " solar masses)\n";
     std::cout << "Schwarzschild radius Rs = " << Rs << " m\n";
     std::cout << "a = " << a << " m, e = " << e << "\n";
     std::cout << "Pericenter rp = " << rp << " m, Apocenter ra = " << ra << " m\n";
-    std::cout << "Orbital period (Newtonian) T = " << T << " s (" << T / (365.25*24*3600.0) << " years)\n";
+    std::cout << "T (Newtonian) = " << T << " s (" << T / (365.25*24*3600.0) << " years)\n";
     std::cout << "Pericenter speed v_peri = " << v_peri << " m/s (" << (v_peri / c) << " c)\n";
     std::cout << "1PN periapsis advance per orbit (theory): " << (delta_omega * 180.0 / M_PI) << " degrees\n";
-    std::cout << "Time step dt = " << dt << " s, total time = " << t_end << " s\n";
-    std::cout << "Writing samples to orbits.csv\n";
+    std::cout << "dt = " << dt << " s, total time = " << t_end << " s\n";
+    std::cout << "Output CSV: " << cfg.output_csv << "\n";
+    std::cout << "GR model track: " << cfg.model << "\n";
+    std::cout << "Writing samples...\n";
+
+    // Choose GR acceleration model
+    auto accelN = [](const Vec2& r, const Vec2& /*v*/, double mu_) { return accel_newtonian(r, mu_); };
+    auto accelGR = [&](const Vec2& r, const Vec2& v, double mu_) {
+        if (cfg.model == "Newtonian") return accel_newtonian(r, mu_);
+        return accel_1pn(r, v, mu_);
+    };
+
+    // Save every k steps
+    const int save_every = std::max(1, cfg.save_every);
 
     // Integrate
     double t = 0.0;
     std::uint64_t step = 0;
-    auto accelN = [](const Vec2& r, const Vec2& /*v*/, double mu_) { return accel_newtonian(r, mu_); };
-    auto accelGR = [](const Vec2& r, const Vec2& v, double mu_) { return accel_1pn(r, v, mu_); };
-
-    // Save every k steps to keep file size reasonable
-    const int save_every = 10;
 
     while (t <= t_end) {
         if (step % save_every == 0) {
@@ -223,6 +350,5 @@ int main() {
     }
 
     std::cout << "Done.\n";
-    std::cout << "Tip: Plot xN vs yN and xGR vs yGR from orbits.csv to see the GR periapsis precession.\n";
     return 0;
 }
