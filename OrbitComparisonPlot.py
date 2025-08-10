@@ -86,7 +86,15 @@ def main():
     plt.savefig("orbit_ecc_energy.png", dpi=200)
 
     # Show for 15 seconds, then close and exit
+    fig.set_size_inches(*(fig.get_size_inches() * 0.8), forward=True)
+    plt.tight_layout(pad=1.2)
     plt.show(block=False)
+    try:
+        mng = plt.get_current_fig_manager()
+        # geometry: "WIDTHxHEIGHT+X+Y" in pixels; adjust Y (last number) smaller to move up
+        mng.window.wm_geometry("+100+50")
+    except Exception:
+        pass
     plt.pause(15.0)
     plt.close(fig)
 
