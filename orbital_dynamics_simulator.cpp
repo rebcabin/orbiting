@@ -20,23 +20,23 @@ struct Vec2 {
 
     Vec2 operator+(const Vec2& o) const { return {x + o.x, y + o.y}; }
     Vec2 operator-(const Vec2& o) const { return {x - o.x, y - o.y}; }
-    Vec2 operator*(double s) const { return {x * s, y * s}; }
-    Vec2 operator/(double s) const { return {x / s, y / s}; }
+    Vec2 operator*(double s)     const { return {x * s, y * s}; }
+    Vec2 operator/(double s)     const { return {x / s, y / s}; }
 
     Vec2& operator+=(const Vec2& o) { x += o.x; y += o.y; return *this; }
     Vec2& operator-=(const Vec2& o) { x -= o.x; y -= o.y; return *this; }
-    Vec2& operator*=(double s) { x *= s; y *= s; return *this; }
+    Vec2& operator*=(double s)      { x *= s; y *= s; return *this; }
 };
 
 inline double dot(const Vec2& a, const Vec2& b) { return a.x * b.x + a.y * b.y; }
-inline double norm2(const Vec2& a) { return dot(a, a); }
-inline double norm(const Vec2& a) { return std::sqrt(norm2(a)); }
+inline double norm2(const Vec2& a)              { return dot(a, a); }
+inline double norm(const Vec2& a)               { return std::sqrt(norm2(a)); }
 inline double cross_z(const Vec2& a, const Vec2& b) { return a.x * b.y - a.y * b.x; }
 
 // ---------------- Physical constants (SI) ----------------
-constexpr double G = 6.67430e-11;     // m^3 kg^-1 s^-2
-constexpr double c = 299792458.0;     // m s^-1
-constexpr double M_sun = 1.98847e30;  // kg
+constexpr double G     = 6.67430e-11;     // m^3 kg^-1 s^-2
+constexpr double c     = 299792458.0;     // m s^-1
+constexpr double M_sun = 1.98847e30;      // kg
 
 // ---------------- State and elements ----------------
 struct State {
@@ -50,8 +50,29 @@ struct Elements {
     double omega;  // argument of periapsis (rad)
     double f;      // true anomaly (rad)
     double h;      // specific angular momentum (|r x v|)
-    double E;      // specific energy (v^2/2 - mu/r)
+    double E;      // specific energy (Newtonian form: v^2/2 - mu/r)
 };
+
+// ---------------- Energies ----------------
+inline double specific_energy_newtonian(const Vec2& r, const Vec2& v, double mu) {
+    const double rn = norm(r);
+    const double v2 = norm2(v);
+    return 0.5 * v2 - mu / rn;
+}
+
+// First Post-Newtonian (1PN) specific energy for a test particle in Schwarzschild (per unit mass):
+// E_1PN = v^2/2 − μ/r + (1/c^2) [ 3/8 v^4 + 1/2 (μ/r) v^2 + 1/2 (μ/r) v_r^2 + 1/2 (μ/r)^2 ]
+inline double specific_energy_1pn(const Vec2& r, const Vec2& v, double mu) {
+    const double rn = norm(r);
+    const double v2 = norm2(v);
+    const double vr = dot(r, v) / (rn + 1e-300);
+    const double mu_over_r = mu / (rn + 1e-300);
+    const double termPN = (3.0 / 8.0) * v2 * v2
+                        + 0.5 * mu_over_r * v2
+                        + 0.5 * mu_over_r * vr * vr
+                        + 0.5 * mu_over_r * mu_over_r;
+    return 0.5 * v2 - mu_over_r + termPN / (c * c);
+}
 
 // ---------------- Acceleration models ----------------
 inline Vec2 accel_newtonian(const Vec2& r, double mu) {
@@ -61,7 +82,7 @@ inline Vec2 accel_newtonian(const Vec2& r, double mu) {
 }
 
 // 1PN test-particle in Schwarzschild (Cartesian 2D):
-// a = a_N + (mu/(c^2 r^3)) [ (4 mu/r - v^2) r + 4 (r·v) v ]
+// a = a_N + (μ/(c^2 r^3)) [ (4 μ/r − v^2) r + 4 (r·v) v ]
 inline Vec2 accel_1pn(const Vec2& r, const Vec2& v, double mu) {
     const double rn = norm(r);
     const double inv_r = 1.0 / (rn + 1e-300);
@@ -84,7 +105,7 @@ inline Elements elements_from_state(const Vec2& r, const Vec2& v, double mu) {
     const double hz = cross_z(r, v);
     const double hmag = std::abs(hz);
 
-    // Specific energy
+    // Specific energy (Newtonian form)
     const double E = 0.5 * v2 - mu / rn;
 
     // Semi-major axis (for E < 0)
@@ -162,8 +183,7 @@ inline double norm_err(const Vec2& er, const Vec2& ev,
 template <typename AccelFunc>
 inline StepResult rk45_step(const State& s, double dt, AccelFunc&& accel, double mu,
                             double rel_tol, double abs_tol_r, double abs_tol_v) {
-    // Coefficients for Dormand–Prince 5(4)
-    // a (c implicit in sums)
+    // Dormand–Prince 5(4) coefficients
     constexpr double a21 = 1.0 / 5.0;
 
     constexpr double a31 = 3.0 / 40.0;
@@ -235,7 +255,6 @@ inline StepResult rk45_step(const State& s, double dt, AccelFunc&& accel, double
               s.v + k1_v * (a61 * dt) + k2_v * (a62 * dt) + k3_v * (a63 * dt) + k4_v * (a64 * dt) + k5_v * (a65 * dt) };
     auto [k6_r, k6_v] = f(s6);
 
-    // k7 at final stage
     State s7{ s.r + k1_r * (a71 * dt) + k2_r * (a72 * dt) + k3_r * (a73 * dt) + k4_r * (a74 * dt) + k5_r * (a75 * dt) + k6_r * (a76 * dt),
               s.v + k1_v * (a71 * dt) + k2_v * (a72 * dt) + k3_v * (a73 * dt) + k4_v * (a74 * dt) + k5_v * (a75 * dt) + k6_v * (a76 * dt) };
     auto [k7_r, k7_v] = f(s7);
@@ -270,16 +289,16 @@ struct Config {
     double a_over_Rs = 100.0;
     double e = 0.60;
     std::string start_at = "pericenter"; // or "apocenter"
-    std::string model = "1PN";           // "1PN" or "Newtonian"
+    std::string model    = "1PN";        // "1PN" or "Newtonian"
 
     // Integration horizon and output
-    int orbits = 5;
-    std::string output_csv = "orbits.csv";
-    int save_every = 10; // every N accepted steps
+    int         orbits      = 5;
+    std::string output_csv  = "orbits.csv";
+    int         save_every  = 10; // every N accepted steps
 
     // Fixed-step parameters (used if use_adaptive=false, and to seed dt)
-    double dt_scale_peri = 0.0025;
-    int steps_per_orbit = 20000;
+    double dt_scale_peri   = 0.0025;
+    int    steps_per_orbit = 20000;
 
     // Optional explicit initial state
     bool use_explicit_state = false;
@@ -287,14 +306,14 @@ struct Config {
     Vec2 v0{};
 
     // Adaptive integrator controls
-    bool use_adaptive = false; // default to fixed-step unless explicitly enabled
-    double rel_tol = 1e-9;
-    double abs_tol_r = 1e-2;   // m
-    double abs_tol_v = 1e-5;   // m/s
-    double safety   = 0.9;
-    double dt_min   = 1e-6;    // s
-    double dt_max   = 1e9;     // s
-    int max_rejects = 20;
+    bool   use_adaptive = false; // default to fixed-step unless enabled
+    double rel_tol      = 1e-9;
+    double abs_tol_r    = 1e-2;  // m
+    double abs_tol_v    = 1e-5;  // m/s
+    double safety       = 0.9;
+    double dt_min       = 1e-6;  // s
+    double dt_max       = 1e9;   // s
+    int    max_rejects  = 20;
 };
 
 inline bool extract_number(const std::string& s, const std::string& key, double& out) {
@@ -387,11 +406,11 @@ int main() {
     std::cout << "Working directory: " << std::filesystem::current_path() << "\n";
 
     // Load configuration
-    const std::string cfgPath = "OrbitalDynamicsConfig.json";
+    const std::string cfgPath = "config.json";
     Config cfg = load_config(cfgPath);
 
     // Physics
-    const double M = cfg.M_solar * M_sun;
+    const double M  = cfg.M_solar * M_sun;
     const double mu = G * M;
     const double Rs = 2.0 * mu / (c * c);
 
@@ -405,24 +424,23 @@ int main() {
         sGR = sN;
         // Infer a and e for logging
         const Elements el0 = elements_from_state(sN.r, sN.v, mu);
-        a = el0.a;
-        e = el0.e;
+        a = el0.a; e = el0.e;
     } else {
         if (cfg.start_at == "apocenter") {
-            const double ra = a * (1.0 + e);
+            const double ra    = a * (1.0 + e);
             const double v_apo = std::sqrt(mu * (1.0 - e) / (a * (1.0 + e)));
-            sN = State{Vec2{ra, 0.0}, Vec2{0.0, -v_apo}};
+            sN  = State{Vec2{ra, 0.0}, Vec2{0.0, -v_apo}};
         } else {
-            const double rp = a * (1.0 - e);
+            const double rp     = a * (1.0 - e);
             const double v_peri = std::sqrt(mu * (1.0 + e) / (a * (1.0 - e)));
-            sN = State{Vec2{rp, 0.0}, Vec2{0.0, v_peri}};
+            sN  = State{Vec2{rp, 0.0}, Vec2{0.0, v_peri}};
         }
         sGR = sN;
     }
 
-    const double rp = a * (1.0 - e);
-    const double ra = a * (1.0 + e);
-    const double T = 2.0 * M_PI * std::sqrt(a * a * a / mu);
+    const double rp     = a * (1.0 - e);
+    const double ra     = a * (1.0 + e);
+    const double T      = 2.0 * M_PI * std::sqrt(a * a * a / mu);
     const double v_peri = std::sqrt(mu * (1.0 + e) / (a * (1.0 - e)));
 
     // Initial dt guess
@@ -443,23 +461,24 @@ int main() {
         "xN,yN,xGR,yGR,"
         "rN,rGR,"
         "aN,eN,omegaN,fN,hN,EN,"
-        "aGR,eGR,omegaGR,fGR,hGR,EGR\n";
+        "aGR,eGR,omegaGR,fGR,hGR,EGR,"
+        "E1PN_GR\n";
     std::cout << "CSV header: " << header;
     ofs << header;
 
     // Console summary
     const double delta_omega = 6.0 * M_PI * mu / (a * (1.0 - e * e) * c * c); // rad/orbit
-    std::cout << "Config file:               " << cfgPath << "\n";
-    std::cout << "Central mass M           = " << M << " kg (" << cfg.M_solar << " solar masses)\n";
-    std::cout << "Schwarzschild radius Rs  = " << Rs << " m\n";
+    std::cout << "Config file: " << cfgPath << "\n";
+    std::cout << "Central mass M = " << M << " kg (" << cfg.M_solar << " solar masses)\n";
+    std::cout << "Schwarzschild radius Rs = " << Rs << " m\n";
     std::cout << "a = " << a << " m, e = " << e << "\n";
-    std::cout << "Pericenter rp            = " << rp << " m, Apocenter ra = " << ra << " m\n";
-    std::cout << "T (Keplerian)            = " << T << " s (" << T / (365.25 * 24 * 3600.0) << " years)\n";
-    std::cout << "Pericenter speed v_peri  = " << v_peri << " m/s (" << v_peri / c << " c)\n";
+    std::cout << "Pericenter rp = " << rp << " m, Apocenter ra = " << ra << " m\n";
+    std::cout << "T (Keplerian) = " << T << " s (" << T / (365.25 * 24 * 3600.0) << " years)\n";
+    std::cout << "Pericenter speed v_peri = " << v_peri << " m/s (" << v_peri / c << " c)\n";
     std::cout << "1PN periapsis advance per orbit (theory) = " << (delta_omega * 180.0 / M_PI) << " deg\n";
-    std::cout << "Integration:               " << (cfg.use_adaptive ? "adaptive RK45" : "fixed RK4")
-              << ", dt initial = " << dt <<  " s\n";
-    std::cout << "Output CSV:                " << cfg.output_csv << "\n";
+    std::cout << "Integration: " << (cfg.use_adaptive ? "adaptive RK45" : "fixed RK4")
+              << ", dt initial = " << dt << " s\n";
+    std::cout << "Output CSV: " << cfg.output_csv << "\n";
     std::cout << "GR model for second track: " << cfg.model << "\n";
 
     // Accelerations
@@ -469,18 +488,25 @@ int main() {
         return accel_1pn(r, v, mu_);
     };
 
-    // Write function
+    // Row writer
     auto write_sample = [&](double t_now) {
         const double rN = norm(sN.r);
         const double rG = norm(sGR.r);
-        const Elements elN = elements_from_state(sN.r, sN.v, mu);
+
+        const Elements elN  = elements_from_state(sN.r, sN.v, mu);
         const Elements elGR = elements_from_state(sGR.r, sGR.v, mu);
+
+        const double EN    = elN.E; // Newtonian specific energy (N track)
+        const double EGR   = elGR.E; // Newtonian-form specific energy, evaluated on GR track (legacy)
+        const double E1PNG = specific_energy_1pn(sGR.r, sGR.v, mu); // Proper 1PN specific energy (GR track)
+
         ofs << t_now << ","
             << sN.r.x << "," << sN.r.y << ","
             << sGR.r.x << "," << sGR.r.y << ","
             << rN << "," << rG << ","
-            << elN.a << "," << elN.e << "," << elN.omega << "," << elN.f << "," << elN.h << "," << elN.E << ","
-            << elGR.a << "," << elGR.e << "," << elGR.omega << "," << elGR.f << "," << elGR.h << "," << elGR.E << "\n";
+            << elN.a << "," << elN.e << "," << elN.omega << "," << elN.f << "," << elN.h << "," << EN << ","
+            << elGR.a << "," << elGR.e << "," << elGR.omega << "," << elGR.f << "," << elGR.h << "," << EGR << ","
+            << E1PNG << "\n";
     };
 
     // Horizon

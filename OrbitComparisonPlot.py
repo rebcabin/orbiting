@@ -2,11 +2,13 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
+SECONDS_PER_YEAR = 365.25 * 24 * 3600.0
+
 def main():
     df = pd.read_csv("orbits.csv")
 
-    # Verify required columns
-    required = {"t", "xN", "yN", "xGR", "yGR", "eN", "eGR", "EN", "EGR"}
+    # Verify required columns (now requires E1PN_GR)
+    required = {"t", "xN", "yN", "xGR", "yGR", "eN", "eGR", "EN", "EGR", "E1PN_GR"}
     missing = [c for c in required if c not in df.columns]
     if missing:
         print(f"Missing columns in CSV: {missing}")
@@ -17,14 +19,17 @@ def main():
     eGR0 = float(df.iloc[0]["eGR"])
     ecc_text = f"(eN≈{eN0:.3f}, eGR≈{eGR0:.3f})"
 
-    # Time
-    t = df["t"].values
+    # Time (use years on plots)
+    t_sec = df["t"].values
+    t_yr = t_sec / SECONDS_PER_YEAR
 
     # Relative energy changes
     EN0 = float(df.iloc[0]["EN"])
-    EGR0 = float(df.iloc[0]["EGR"])
     dEN_rel = (df["EN"].values - EN0) / abs(EN0)
-    dEGR_rel = (df["EGR"].values - EGR0) / abs(EGR0)
+
+    # Use proper 1PN energy for GR curve
+    E1PN0 = float(df.iloc[0]["E1PN_GR"])
+    dE1PN_rel = (df["E1PN_GR"].values - E1PN0) / abs(E1PN0)
 
     # Figure with three subplots: orbit, eccentricity, energy
     fig, (ax_orbit, ax_e, ax_E) = plt.subplots(
@@ -42,19 +47,19 @@ def main():
     ax_orbit.grid(True, ls="--", alpha=0.4)
     ax_orbit.legend()
 
-    # Middle: eccentricity vs time
-    ax_e.plot(t, df["eN"].values, label="eN (Newtonian)", lw=1.4)
-    ax_e.plot(t, df["eGR"].values, label="eGR (GR 1PN)", lw=1.4)
-    ax_e.set_xlabel("t [s]")
+    # Middle: eccentricity vs time (years)
+    ax_e.plot(t_yr, df["eN"].values, label="eN (Newtonian)", lw=1.4)
+    ax_e.plot(t_yr, df["eGR"].values, label="eGR (GR 1PN)", lw=1.4)
+    ax_e.set_xlabel("t [years]")
     ax_e.set_ylabel("Eccentricity")
     ax_e.set_title("Eccentricity evolution")
     ax_e.grid(True, ls="--", alpha=0.4)
     ax_e.legend()
 
-    # Bottom: relative energy change vs time
-    ax_E.plot(t, dEN_rel, label="(EN - EN0)/|EN0| (Newtonian)", lw=1.4)
-    ax_E.plot(t, dEGR_rel, label="(EGR - EGR0)/|EGR0| (GR 1PN)", lw=1.4)
-    ax_E.set_xlabel("t [s]")
+    # Bottom: relative energy change vs time (use EN for Newtonian, E1PN_GR for GR)
+    ax_E.plot(t_yr, dEN_rel, label="(EN - EN0)/|EN0| (Newtonian)", lw=1.4)
+    ax_E.plot(t_yr, dE1PN_rel, label="(E1PN_GR - E1PN0)/|E1PN0| (GR 1PN)", lw=1.4)
+    ax_E.set_xlabel("t [years]")
     ax_E.set_ylabel("Relative energy change")
     ax_E.set_title("Energy stability (relative change)")
     ax_E.grid(True, ls="--", alpha=0.4)
